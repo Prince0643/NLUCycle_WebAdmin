@@ -91,19 +91,19 @@ ridesRef.on('value', (data) => {
         data: {
             labels: dailyRides.map(ride => ride.date),
             datasets: [{
-                label: 'Completed Rides',
+                label: 'Completed',
                 data: dailyRides.map(ride => ride.completed),
                 borderColor: 'rgba(0, 128, 0, 0.5)',
                 backgroundColor: 'rgba(0, 128, 0, 0.5)',
                 fill: false,
             }, {
-                label: 'Cancelled Rides',
+                label: 'Cancelled',
                 data: dailyRides.map(ride => ride.cancelled),
                 borderColor: 'rgba(255, 0, 0, 0.5)',
                 backgroundColor: 'rgba(255, 0, 0, 0.5)',
                 fill: false,
             }, {
-                label: 'Waiting Rides',
+                label: 'Waiting',
                 data: dailyRides.map(ride => ride.waiting),
                 borderColor: 'rgba(255, 255, 0, 0.5)',
                 backgroundColor: 'rgba(255, 255, 0, 0.5)',
