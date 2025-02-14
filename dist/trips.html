@@ -73,15 +73,10 @@
         </li>
       </ul>
       <script>
-        // Get the username from localStorage
         const username = localStorage.getItem('username');
-
-        // Check if the username is null
         if (username !== null) {
-          // Update the HTML
           document.getElementById('username').textContent = username;
         } else {
-          // If the username is null, display a default message
           document.getElementById('username').textContent = 'Admin';
         }
       </script>
@@ -118,11 +113,9 @@
         </li>
         <script>
           window.onload = function () {
-            // Get the username and email from localStorage
             const username = localStorage.getItem('username');
             const email = localStorage.getItem('email');
 
-            // Update the HTML
             document.getElementById('username-dropdown').textContent = username;
             document.getElementById('email-dropdown').textContent = email;
           };
@@ -448,228 +441,8 @@
   <script src="https://cdn.datatables.net/1.10.24/js/jquery.dataTables.min.js"></script>
   <script src="https://cdn.datatables.net/1.10.24/js/dataTables.bootstrap4.min.js"></script>
   <script src="firebase.js"></script>
-  <script>
-    const fareMatrixRef = database.ref('fare_matrix');
-    let fareDataCache = {}; // Cache for fare data
+  <script src="trips.js"></script>
 
-    // Retrieve the fare data
-    fareMatrixRef.on('value', (snapshot) => {
-      fareDataCache = snapshot.val() || {};
-      renderFareTable(fareDataCache);
-    });
-
-    let pendingUpdates = {}; // Store pending updates
-
-    function renderFareTable(fareData) {
-      const fareTableBody = document.getElementById('fare-table-body');
-      fareTableBody.innerHTML = ''; // Clear existing rows
-
-      // Convert fareData object to an array and include keys
-      const fareEntries = Object.entries(fareData).map(([key, value]) => ({ key, ...value }));
-
-      // Exclude the last entry
-      if (fareEntries.length > 0) {
-        fareEntries.pop(); // Remove the last entry
-      }
-
-      // Render the table rows
-      fareEntries.forEach(fareEntry => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-                        <td>${fareEntry.Point_of_Origin}</td>
-                        <td>${fareEntry.Destination}</td>
-                        <td>${fareEntry['Number_of_KM']}</td>
-                        <td><input type="number" value="${fareEntry['Arkila_Discounted']}" disabled data-key="${fareEntry.key}" data-field="Arkila_Discounted" /></td>
-                        <td><input type="number" value="${fareEntry['Arkila_Regular']}" disabled data-key="${fareEntry.key}" data-field="Arkila_Regular" /></td>
-                    `;
-        fareTableBody.appendChild(row);
-      });
-
-      // Check if DataTable is already initialized
-      if ($.fn.DataTable.isDataTable('#fare-table')) {
-        // Destroy the existing DataTable
-        $('#fare-table').DataTable().destroy();
-      }
-
-      // Initialize DataTables
-      $('#fare-table').DataTable({
-        paging: true,
-        searching: true,
-        ordering: true,
-        pageLength: 10,
-        lengthMenu: [5, 10, 25, 50, 100]
-      });
-    }
-
-    function toggleEditFare() {
-      const fareTableBody = document.getElementById('fare-table-body');
-      const inputs = fareTableBody.querySelectorAll('input[type="number"]');
-      const isEditing = inputs.length > 0 && !inputs[0].disabled; // Check if currently editing
-
-      if (isEditing) {
-        // Confirm before saving
-        const confirmSave = confirm("Are you sure you want to save the changes?");
-        if (confirmSave) {
-          // Update the database with pending updates
-          for (const key in pendingUpdates) {
-            const { field, value } = pendingUpdates[key];
-            updateFare(key, field, value);
-          }
-          pendingUpdates = {}; // Clear pending updates
-          inputs.forEach(input => {
-            input.disabled = true; // Disable the inputs after saving
-          });
-          // Change button text back to "Edit"
-          const editButton = document.getElementById('edit-fare-button');
-          editButton.textContent = 'Edit';
-        } else {
-          // If not confirmed, revert the button text to "Edit"
-          console.log("Changes were not saved.");
-          inputs.forEach(input => {
-            input.disabled = true; // Keep inputs disabled
-          });
-          const editButton = document.getElementById('edit-fare-button');
-          editButton.textContent = 'Edit';
-        }
-      } else {
-        // Confirm before enabling inputs for editing
-        const confirmEdit = confirm("Are you sure you want to edit the fare information?");
-        if (confirmEdit) {
-          // Enable inputs for editing
-          inputs.forEach(input => {
-            input.disabled = false; // Enable the inputs
-            input.addEventListener('input', function () {
-              const key = this.getAttribute('data-key');
-              const field = this.getAttribute('data-field');
-              pendingUpdates[key] = { field, value: this.value }; // Store pending updates
-            });
-          });
-          // Change button text to "Save"
-          const editButton = document.getElementById('edit-fare-button');
-          editButton.textContent = 'Save';
-          console.log("Editing mode enabled.");
-        } else {
-          console.log("Editing mode not enabled.");
-        }
-      }
-    }
-
-    // Function to update fare data in Firebase and recalculate totals
-    async function updateFare(key, field, value) {
-      try {
-        await fareMatrixRef.child(key).update({ [field]: parseFloat(value) });
-        console.log(`Updated ${field} for ${key} to ${value}`);
-        await recalculateTotals(); // Recalculate totals after update
-      } catch (error) {
-        console.error('Error updating fare:', error);
-        alert('Error updating fare. Please try again.'); // User feedback
-      }
-    }
-
-    // Function to recalculate totals and update the perkm node
-    async function recalculateTotals() {
-      const kmValues = [];
-      const arkilaRegularValues = [];
-
-      for (const key in fareDataCache) {
-        if (fareDataCache.hasOwnProperty(key)) {
-          const fareEntry = fareDataCache[key];
-          kmValues.push(fareEntry['Number_of_KM'] || 0);
-          arkilaRegularValues.push(fareEntry['Arkila_Regular'] || 0);
-        }
-      }
-
-      // Remove outliers using IQR method
-      const filteredKM = removeOutliers(kmValues);
-      const filteredArkilaRegular = removeOutliers(arkilaRegularValues);
-
-      const totalFilteredKM = filteredKM.reduce((acc, val) => acc + val, 0);
-      const totalFilteredArkilaRegular = filteredArkilaRegular.reduce((acc, val) => acc + val, 0);
-      const farePerKM = totalFilteredKM > 0 ? totalFilteredArkilaRegular / totalFilteredKM : 0;
-
-      try {
-        await database.ref('fare_matrix/perkm').set({
-          totalKM: totalFilteredKM,
-          totalArkilaRegular: totalFilteredArkilaRegular,
-          farePerKM: farePerKM,
-          count: kmValues.length // Total count of original entries
-        });
-        console.log('perkm node updated successfully with totals:', {
-          totalFilteredKM,
-          totalArkilaRegular: totalFilteredArkilaRegular,
-          farePerKM
-        });
-      } catch (error) {
-        console.error('Error updating perkm node:', error);
-      }
-    }
-
-    // Function to remove outliers using the IQR method
-    function removeOutliers(values) {
-      if (values.length === 0) return values;
-
-      values.sort((a, b) => a - b);
-      const q1 = values[Math.floor((values.length / 4))];
-      const q3 = values[Math.floor((values.length * (3 / 4)))];
-      const iqr = q3 - q1;
-
-      const lowerBound = q1 - 1.5 * iqr;
-      const upperBound = q3 + 1.5 * iqr;
-
-      return values.filter(value => value >= lowerBound && value <= upperBound);
-    }
-  </script>
-  <script>
-    const pages = [
-      { name: "Drivers", url: "drivers.html" },
-      { name: "Feedbacks", url: "feedbacks.html" },
-      { name: "Settings", url: "settings.html" },
-      { name: "Home", url: "index.html" },
-      { name: "Users", url: "users.html" }
-    ];
-
-    const searchInput = document.getElementById('search-input');
-    const suggestionsBox = document.getElementById('suggestions');
-
-    searchInput.addEventListener('input', function () {
-      const query = this.value.toLowerCase();
-      suggestionsBox.innerHTML = '';
-      suggestionsBox.style.display = 'none';
-
-      if (query) {
-        const filteredPages = pages.filter(page => page.name.toLowerCase().includes(query));
-        filteredPages.forEach(page => {
-          const suggestionItem = document.createElement('div');
-          suggestionItem.classList.add('suggestion-item');
-          suggestionItem.textContent = page.name;
-          suggestionItem.onclick = () => {
-            window.location.href = page.url;
-          };
-          suggestionsBox.appendChild(suggestionItem);
-        });
-        if (filteredPages.length > 0) {
-          suggestionsBox.style.display = 'block';
-        }
-      }
-    });
-
-    searchInput.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter') {
-        const query = this.value.toLowerCase();
-        const page = pages.find(page => page.name.toLowerCase() === query);
-        if (page) {
-          window.location.href = page.url;
-        }
-      }
-    });
-
-    // Close suggestions when clicking outside
-    document.addEventListener('click', function (event) {
-      if (!searchInput.contains(event.target) && !suggestionsBox.contains(event.target)) {
-        suggestionsBox.style.display = 'none';
-      }
-    });
-  </script>
 </body>
 
 </html>

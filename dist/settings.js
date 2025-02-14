@@ -1,53 +1,36 @@
-// Backup data function
 function backupData() {
-    // Get a reference to the database
     const database = firebase.database();
 
-    // Get a reference to the users and drivers nodes
     const usersRef = database.ref('users');
     const driversRef = database.ref('drivers');
 
-    // Use the once() method to read the data from the nodes
     usersRef.once('value', (usersSnapshot) => {
         const usersData = usersSnapshot.val();
 
-        // Convert the users data to a JSON string
         const usersJson = JSON.stringify(usersData);
 
-        // Create a blob with the users data
         const usersBlob = new Blob([usersJson], { type: 'application/json' });
 
-        // Create a link to download the users data
         const usersLink = document.createElement('a');
         usersLink.href = URL.createObjectURL(usersBlob);
         usersLink.download = 'users.json';
         usersLink.click();
 
-        // Use the once() method to read the data from the drivers node
         driversRef.once('value', (driversSnapshot) => {
             const driversData = driversSnapshot.val();
-
-            // Convert the drivers data to a JSON string
             const driversJson = JSON.stringify(driversData);
-
-            // Create a blob with the drivers data
             const driversBlob = new Blob([driversJson], { type: 'application/json' });
 
-            // Create a link to download the drivers data
             const driversLink = document.createElement('a');
             driversLink.href = URL.createObjectURL(driversBlob);
             driversLink.download = 'drivers.json';
             driversLink.click();
 
-            // Display success alert
             document.getElementById("backup-data-alert").style.display = "block";
         });
     });
 }
-
-// Add event listeners to the buttons
 document.getElementById('backup-data-btn').addEventListener('click', backupData);
-
 document.getElementById('upload-data-btn').addEventListener('click', function () {
     const fileInput = document.getElementById('upload-json');
     const file = fileInput.files[0];
@@ -80,7 +63,6 @@ document.getElementById('upload-data-btn').addEventListener('click', function ()
                 });
             }
 
-            // Wait for all uploads to complete
             Promise.all(uploadPromises)
                 .then(() => {
                     document.getElementById('upload-data-alert').style.display = 'block';
@@ -99,4 +81,113 @@ document.getElementById('upload-data-btn').addEventListener('click', function ()
     };
 
     reader.readAsText(file);
+});
+
+const pages = [
+    { name: "Drivers", url: "drivers.html" },
+    { name: "Feedbacks", url: "feedbacks.html" },
+    { name: "Home", url: "index.html" },
+    { name: "Trips", url: "trips.html" },
+    { name: "Users", url: "users.html" }
+];
+
+const searchInput = document.getElementById('search-input');
+const suggestionsBox = document.getElementById('suggestions');
+
+searchInput.addEventListener('input', function () {
+    const query = this.value.toLowerCase();
+    suggestionsBox.innerHTML = '';
+    suggestionsBox.style.display = 'none';
+
+    if (query) {
+        const filteredPages = pages.filter(page => page.name.toLowerCase().includes(query));
+        filteredPages.forEach(page => {
+            const suggestionItem = document.createElement('div');
+            suggestionItem.classList.add('suggestion-item');
+            suggestionItem.textContent = page.name;
+            suggestionItem.onclick = () => {
+                window.location.href = page.url;
+            };
+            suggestionsBox.appendChild(suggestionItem);
+        });
+        if (filteredPages.length > 0) {
+            suggestionsBox.style.display = 'block';
+        }
+    }
+});
+
+searchInput.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') {
+        const query = this.value.toLowerCase();
+        const page = pages.find(page => page.name.toLowerCase() === query);
+        if (page) {
+            window.location.href = page.url;
+        }
+    }
+});
+
+document.addEventListener('click', function (event) {
+    if (!searchInput.contains(event.target) && !suggestionsBox.contains(event.target)) {
+        suggestionsBox.style.display = 'none';
+    }
+});
+
+const usersRef = database.ref('users');
+const driversRef = database.ref('drivers');
+const logsRef = database.ref('logs');
+
+logsRef.limitToLast(10).once('value', (logsSnapshot) => {
+    console.log('Logs data:', logsSnapshot.val());
+
+    const logsTableBody = document.getElementById('logs-tbody');
+    logsTableBody.innerHTML = '';
+
+    if (logsSnapshot.exists()) {
+        const logsArray = [];
+        logsSnapshot.forEach((log) => {
+            logsArray.push(log.val());
+        });
+
+        logsArray.reverse();
+        logsArray.forEach((logData) => {
+            const logElement = document.createElement('tr');
+            logElement.innerHTML = `
+        <td>${logData.date}</td>
+        <td>${logData.event}</td>
+        <td>${logData.details}</td>
+      `;
+            logsTableBody.appendChild(logElement);
+        });
+    } else {
+        const noLogsMessage = document.createElement('p');
+        noLogsMessage.textContent = 'No logs available.';
+        logsTableBody.appendChild(noLogsMessage);
+    }
+});
+
+function closeDialog() {
+    const dialog = document.querySelector('.dialog');
+    dialog.remove();
+}
+
+usersRef.on('child_added', (userSnapshot) => {
+    const userKey = userSnapshot.key;
+    const userData = userSnapshot.val();
+    const logData = {
+        date: new Date().toISOString(),
+        event: 'User account created',
+        details: `User ${userData.name} (${userData.email}) created`
+    };
+    logsRef.push(logData);
+});
+
+driversRef.on('child_added', (driverSnapshot) => {
+    const driverKey = driverSnapshot.key;
+    const driverData = driverSnapshot.val();
+    const logData = {
+        date: new Date().toISOString(),
+        event: 'Driver account created',
+        details: `Driver ${driverData.name} (${driverData.email}) created`
+    };
+    logsRef.push(logData);
 });

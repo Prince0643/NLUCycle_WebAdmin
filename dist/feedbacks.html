@@ -73,15 +73,11 @@
         </li>
       </ul>
       <script>
-        // Get the username from localStorage
         const username = localStorage.getItem('username');
 
-        // Check if the username is null
         if (username !== null) {
-          // Update the HTML
           document.getElementById('username').textContent = username;
         } else {
-          // If the username is null, display a default message
           document.getElementById('username').textContent = 'Admin';
         }
       </script>
@@ -116,11 +112,9 @@
         </li>
         <script>
           window.onload = function () {
-            // Get the username and email from localStorage
             const username = localStorage.getItem('username');
             const email = localStorage.getItem('email');
 
-            // Update the HTML
             document.getElementById('username-dropdown').textContent = username;
             document.getElementById('email-dropdown').textContent = email;
           };
@@ -205,13 +199,13 @@
     </div>
     <!-- content-wrapper ends -->
     <!-- partial:partials/_footer.html -->
-    <footer class="footer">
-      <div class="d-flex justify-content-center">
-        <span class="text-muted text-center">© Prince Christiane Tolentino & Reyzeil Anne Oler, CIS DMMMSU NLUC, 2025
-          NLUCycle. All rights reserved.</span>
-      </div>
-    </footer>
   </div>
+  <footer class="footer">
+    <div class="d-flex justify-content-center">
+      <span class="text-muted text-center">© Prince Christiane Tolentino & Reyzeil Anne Oler, CIS DMMMSU NLUC, 2025
+        NLUCycle. All rights reserved.</span>
+    </div>
+  </footer>
   <!-- main-panel ends -->
   </div>
   <!-- page-body-wrapper ends -->
@@ -241,143 +235,8 @@
   <script src="assets/js/jquery.cookie.js" type="text/javascript"></script>
   <script src="assets/js/dashboard.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
   <script src="assets/vendors/datatables.net/jquery.dataTables.js"></script>
   <script src="assets/vendors/datatables.net-bs4/dataTables.bootstrap4.js"></script>
-  <script>
-    const feedbacksRef = firebase.database().ref('feedbacks');
-
-    // Use the on() method to read the data from the feedbacks node
-    feedbacksRef.on('value', (feedbacksSnapshot) => {
-      const feedbackContainer = document.getElementById('feedback-table-body');
-      feedbackContainer.innerHTML = '';
-
-      // Create an array to hold feedbacks
-      const feedbacksArray = [];
-
-      // Loop through the feedbacks and push them into the array
-      feedbacksSnapshot.forEach((userFeedbacks) => {
-        userFeedbacks.forEach((feedback) => {
-          const feedbackData = feedback.val();
-          feedbacksArray.push(feedbackData);
-        });
-      });
-
-      // Sort feedbacks by date in descending order
-      feedbacksArray.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-      // Loop through the sorted array and populate the table
-      feedbacksArray.forEach((feedbackData) => {
-        const feedbackElement = document.createElement('tr');
-        feedbackElement.className = 'feedback';
-        feedbackElement.innerHTML = `
-                    <td><strong>${feedbackData.from}</strong></td>
-                    <td>${feedbackData.passenger_name}</td>
-                    <td>${feedbackData.driver_name}</td>
-                    <td>${feedbackData.rating}</td>
-                    <td>${feedbackData.comment}</td>
-                    <td>${feedbackData.completion_status}</td>
-                    <td>${feedbackData.date}</td>
-                `;
-        feedbackContainer.appendChild(feedbackElement);
-      });
-
-      // Initialize DataTables
-      $('#feedback-table').DataTable({
-        paging: true, // Enable pagination
-        searching: true, // Enable searching
-        ordering: true, // Enable ordering
-        pageLength: 10, // Set default number of rows per page
-        lengthMenu: [5, 10, 25, 50, 100] // Options for number of rows per page
-      });
-    });
-
-    document.getElementById('export-button').addEventListener('click', function () {
-      // Get the feedback table
-      const feedbackTable = document.getElementById('feedback-table-body');
-
-      // Create an array to hold the data
-      const data = [];
-
-      // Get the header row
-      const header = ['From', 'Passenger Name', 'Driver Name', 'Rating', 'Comment', 'Completion Status', 'Date'];
-      data.push(header);
-
-      // Loop through the feedback rows
-      const rows = feedbackTable.getElementsByTagName('tr');
-      for (let i = 0; i < rows.length; i++) {
-        const row = [];
-        const cells = rows[i].getElementsByTagName('td');
-
-        for (let j = 0; j < cells.length; j++) {
-          row.push(cells[j].innerText);
-        }
-
-        data.push(row);
-      }
-
-      // Create a new workbook and a new worksheet
-      const ws = XLSX.utils.aoa_to_sheet(data);
-      const wb = XLSX.utils.book_new();
-
-      // Append the worksheet to the workbook
-      XLSX.utils.book_append_sheet(wb, ws, 'Feedbacks');
-
-      // Export the workbook
-      XLSX.writeFile(wb, 'feedbacks.xlsx');
-    });
-
-    const pages = [
-      { name: "Drivers", url: "drivers.html" },
-      { name: "Home", url: "index.html" },
-      { name: "Settings", url: "settings.html" },
-      { name: "Trips", url: "trips.html" },
-      { name: "Users", url: "users.html" }
-    ];
-
-    const searchInput = document.getElementById('search-input');
-    const suggestionsBox = document.getElementById('suggestions');
-
-    searchInput.addEventListener('input', function () {
-      const query = this.value.toLowerCase();
-      suggestionsBox.innerHTML = '';
-      suggestionsBox.style.display = 'none';
-
-      if (query) {
-        const filteredPages = pages.filter(page => page.name.toLowerCase().includes(query));
-        filteredPages.forEach(page => {
-          const suggestionItem = document.createElement('div');
-          suggestionItem.classList.add('suggestion-item');
-          suggestionItem.textContent = page.name;
-          suggestionItem.onclick = () => {
-            window.location.href = page.url;
-          };
-          suggestionsBox.appendChild(suggestionItem);
-        });
-        if (filteredPages.length > 0) {
-          suggestionsBox.style.display = 'block';
-        }
-      }
-    });
-
-    searchInput.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter') {
-        const query = this.value.toLowerCase();
-        const page = pages.find(page => page.name.toLowerCase() === query);
-        if (page) {
-          window.location.href = page.url;
-        }
-      }
-    });
-
-    // Close suggestions when clicking outside
-    document.addEventListener('click', function (event) {
-      if (!searchInput.contains(event.target) && !suggestionsBox.contains(event.target)) {
-        suggestionsBox.style.display = 'none';
-      }
-    });
-  </script>
-
   <!-- <script src="assets/js/Chart.roundedBarCharts.js"></script> -->
   <!-- End custom js for this page-->
 </body>

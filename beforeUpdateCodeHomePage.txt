@@ -1,0 +1,971 @@
+import 'dart:math';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_rating_bar/flutter_rating_bar.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:routing_client_dart/routing_client_dart.dart';
+import 'package:routing_client_dart/src/models/road.dart';
+import 'package:users_app/authentication/login_screen.dart';
+import '../global/global_var.dart';
+import 'package:http/http.dart' as http;
+import '../widgets/loading_dialog.dart';
+import 'package:intl/intl.dart';
+
+
+class HomePage extends StatefulWidget
+{
+  const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage>
+{
+  bool _isOnTheWayCardVisible = false;
+  bool _isLoading = false;
+  bool _isBooking = false;
+  bool _isCancelButtonVisible = false;
+  String _distanceText = 'Distance: 0 km';
+  String _fareText = 'Fare: ₱0.00';
+  GlobalKey<ScaffoldState> sKey = GlobalKey<ScaffoldState>();
+  final FirebaseAuth auth = FirebaseAuth.instance;
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+  final _originController = TextEditingController();
+  final _destinationController = TextEditingController();
+  final _landmarkController = TextEditingController();
+  Polyline _polyline = Polyline(points: []);
+  String _driverName = '';
+  String _plate = '';
+  String? _userName;
+  List<String> _barangays = [];
+  bool _showOriginSuggestions = false;
+  bool _showDestinationSuggestions = false;
+  double? _perKmRate;
+
+  @override
+  void initState() {
+    super.initState();
+    _getUserName();
+    _fetchBarangays();
+    _fetchFareRate();
+  }
+
+  void _getUserName() async {
+    final FirebaseAuth auth = FirebaseAuth.instance;
+    final User? user = auth.currentUser;
+
+    // Get the user's name from Firebase Auth
+    String? userName = user?.displayName;
+
+    // Get the user's name from Firebase Realtime Database
+    final database = FirebaseDatabase.instance.ref();
+    final userRef = database.child('users').child(user!.uid);
+    userRef.get().then((snapshot) {
+      if (snapshot.exists) {
+        Map data = snapshot.value as Map;
+        userName = data['name'];
+        setState(() {
+          _userName = userName;
+          showWelcomeNotification(userName!);
+        });
+      }
+    });
+  }
+
+  Future<void> _fetchBarangays() async {
+    final database = FirebaseDatabase.instance.ref();
+    final snapshot = await database.child('brgy/Points').get();
+    if (snapshot.exists) {
+      List<dynamic> barangayList = snapshot.value as List<dynamic>;
+      setState(() {
+        _barangays = barangayList.map((brgy) => brgy.toString()).toList();
+      });
+    } else {
+      print('No barangays found.');
+    }
+  }
+
+  List<String> _getFilteredBarangays(String query) {
+    if (query.isEmpty) {
+      return [];
+    }
+    return _barangays.where((brgy) => brgy.toLowerCase().contains(query.toLowerCase())).toList();
+  }
+
+  Widget _buildSuggestionsList(bool isOrigin) {
+    final query = isOrigin ? _originController.text : _destinationController.text;
+    final filteredBarangays = _getFilteredBarangays(query);
+
+    return ListView.builder(
+      shrinkWrap: true,
+      physics: NeverScrollableScrollPhysics(),
+      itemCount: filteredBarangays.length > 3 ? 3 : filteredBarangays.length, // Limit to 5 suggestions
+      itemBuilder: (context, index) {
+        return ListTile(
+          title: Text(
+            filteredBarangays[index],
+            style: TextStyle(color: Colors.black87), // Darker font color
+          ),
+          onTap: () {
+            if (isOrigin) {
+              _originController.text = filteredBarangays[index]; // Set the selected barangay
+              _showOriginSuggestions = false; // Hide suggestions
+            } else {
+              _destinationController.text = filteredBarangays[index]; // Set the selected barangay
+              _showDestinationSuggestions = false; // Hide suggestions
+            }
+            setState(() {}); // Update the UI
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _fetchFareRate() async {
+    final database = FirebaseDatabase.instance.ref();
+    final fareRef = database.child('fare_matrix/perkm/farePerKM');
+    fareRef.get().then((snapshot) {
+      if (snapshot.exists) {
+        setState(() {
+          _perKmRate = double.parse(snapshot.value.toString());
+        });
+      } else {
+        print('Fare rate not found.');
+      }
+    }).catchError((error) {
+      print('Error fetching fare rate: $error');
+    });
+  }
+
+  void showWelcomeNotification(String userName) {
+    final snackBar = SnackBar(
+      content: Text('Welcome, Passenger $userName!'),
+      backgroundColor: Colors.white,
+    );
+    ScaffoldMessenger.of(context).showSnackBar(snackBar);
+  }
+
+  Future<void> _requestLocationPermission() async {
+    var status = await Permission.location.status;
+    if (!status.isGranted) {
+      // Request permission
+      await Permission.location.request();
+    }
+  }
+
+  Future<Position> getCurrentLocation() async {
+    await _requestLocationPermission(); // Request permission
+    return await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+  }
+  MapController mapController = MapController();
+  Marker? marker;
+
+  void _startTrackingUserLocation() async {
+    final GeolocatorPlatform _geolocatorPlatform = GeolocatorPlatform.instance;
+    final LocationSettings locationSettings = LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 100,
+    );
+
+    _geolocatorPlatform.getPositionStream(locationSettings: locationSettings).listen((Position position) {
+      final LatLng latLng = LatLng(position.latitude, position.longitude);
+
+      // Update map position and add marker
+      mapController.move(latLng, 15.0);
+      setState(() {
+        marker = Marker(
+          point: latLng,
+          width: 60,
+          child: const Icon(
+            Icons.location_pin,
+            size: 60,
+            color: Colors.red,
+          ),
+        );
+        markers = [...?markers, marker!];
+      });
+    });
+  }
+
+
+  void _storeDataToDatabase(String userName) async {
+    final origin = _originController.text;
+    final destination = _destinationController.text;
+    final landmark = _landmarkController.text; // Get the landmark value
+    final distance = _distanceText.split(' ')[1]; // extract the distance value
+    final fare = _fareText.split(' ')[1]; // extract the fare value
+    final latLngPoints = _generateRouteLatlngPoints;
+
+    String completionStatus = 'waiting';
+
+    // Get the current date and time
+    final now = DateTime.now();
+
+    final database = FirebaseDatabase.instance.ref();
+    await database
+        .child('rides')
+        .child(userName)
+        .push()
+        .set({
+      'origin': origin,
+      'destination': destination,
+      'landmark': landmark,
+      'distance': distance,
+      'fare': fare,
+      'user_name': userName,
+      'route': latLngPoints.map((point) => [point.latitude, point.longitude]).toList(),
+      'completion_status': completionStatus,
+      'driver_name': '',
+      'booking_date_time': now.toIso8601String(),
+    });
+
+    // Add a listener to the completion status
+    database.child('rides').child(userName).limitToLast(1).onValue.listen((event) {
+      final rideData = event.snapshot.value as Map<dynamic, dynamic>;
+      final completionStatus = rideData.values.first['completion_status'];
+      final driverName = rideData.values.first['driver_name']; // Get the driver's name
+      final driverPlate = rideData.values.first['driver_plate'];
+      setState(() {
+        if (completionStatus == 'on the way') {
+          _isCancelButtonVisible = false;
+          _isOnTheWayCardVisible = true;
+          _driverName = driverName;
+          _plate = driverPlate;
+          _startTrackingUserLocation();
+        } else if (completionStatus == 'completed' || completionStatus == 'failed') {
+          _showFeedbackDialog(context);
+        }
+      });
+    });
+  }
+
+  void _animateToRoute() {
+    final LatLng center = _polyline.points.reduce((a, b) => a.longitude > b.longitude ? a : b);
+    mapController.move(center, mapController.zoom);
+  }
+
+  void _calculateAndPrintFare(double distance) {
+    if (_perKmRate == null) {
+      print('Fare rate not available. Cannot calculate fare.');
+      return;
+    }
+
+    double fare = (distance / 1000) * _perKmRate!;
+
+    // Round down to the nearest 10
+    fare = (fare / 10).floor() * 10;
+
+    // If the fare is 5 or more, subtract 10
+    if (fare >= 5) {
+      fare -= 10;
+    }
+
+    // Set a minimum fare of 30.00 pesos
+    fare = fare < 30.00 ? 30.00 : fare;
+
+    setState(() {
+      _fareText = 'Fare: ₱${fare.toStringAsFixed(2)}'; // Display fare as a double with two decimal places
+    });
+  }
+
+  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+    const R = 6371; // Radius of the earth in km
+    final dLat = _deg2rad(lat2 - lat1);
+    final dLon = _deg2rad(lon2 - lon1);
+    final a = sin(dLat / 2) * sin(dLat / 2) +
+        cos(_deg2rad(lat1)) * cos(_deg2rad(lat2)) * sin(dLon / 2) * sin(dLon / 2);
+    final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    final d = R * c * 1000; // Convert km to meters
+    return d;
+  }
+
+  double _deg2rad(double deg) {
+    return deg * pi / 180;
+  }
+
+  void _calculateAndPrintDistance(List<LatLng> latLngPoints) {
+    double distance = 0;
+    for (int i = 0; i < latLngPoints.length - 1; i++) {
+      final lat1 = latLngPoints[i].latitude;
+      final lon1 = latLngPoints[i].longitude;
+      final lat2 = latLngPoints[i + 1].latitude;
+      final lon2 = latLngPoints[i + 1].longitude;
+      distance += _calculateDistance(lat1, lon1, lat2, lon2);
+    }
+
+    setState(() {
+      _distanceText = 'Distance: ${(distance / 1000).toStringAsFixed(2)} km';
+    });
+
+    _calculateAndPrintFare(distance);
+  }
+
+  signOut() async {
+    await auth.signOut();
+    Navigator.pushReplacement(
+        context, MaterialPageRoute(builder: (context) => LogInScreen()));
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.deepOrange,
+        title: const Text(
+          'NLUCycle',
+          style: TextStyle(fontSize: 22, color: Colors.white),
+        ),
+      ),
+
+      key: sKey,
+      drawer: Drawer(
+        backgroundColor: Colors.white,
+        child: ListView(
+          children: [
+            //header
+            DrawerHeader(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.person,
+                    size: 60,
+                    color: Colors.deepOrange,
+                  ),
+                  const SizedBox(width: 16,),
+                  Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        userName,
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Colors.deepOrange,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Text(
+                        "Profile",
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Colors.grey,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const Divider(
+              height: 1,
+              color: Colors.white,
+              thickness: 1,
+            ),
+            const SizedBox(height: 10,),
+            //body
+            ListTile(
+              leading: IconButton(
+                onPressed: (){},
+                icon: const Icon(Icons.info, color: Colors.grey,),
+              ),
+              title: const Text("About", style: TextStyle(color: Colors.grey),),
+            ),
+            ListTile(
+              leading: IconButton(
+                onPressed: (){
+                  signOut();
+                },
+                icon: const Icon(Icons.logout, color: Colors.grey,),
+              ),
+              title: const Text("Logout", style: TextStyle(color: Colors.grey),),
+            ),
+          ],
+        ),
+      ),
+      body: Stack(
+        children: [
+          content(),
+          Positioned(
+            bottom: 20.0,
+            right: 20.0,
+            child: ElevatedButton(
+                onPressed: () async {
+                  setState(() {
+                    _isLoading = true;
+                  });
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (context) {
+                      return LoadingDialog(messageText: 'Locating...');
+                    },
+                  );
+                  Position position = await getCurrentLocation();
+                  LatLng latLng = LatLng(position.latitude, position.longitude);
+
+                  mapController.move(latLng, 15.0);
+                  setState(() {
+                    _isLoading = false;
+                    marker = Marker( // Update the marker variable
+                      point: latLng,
+                      width: 60,
+                      child: const Icon(
+                        Icons.location_pin,
+                        size: 60,
+                        color: Colors.red,
+                      ),
+                    );
+                    if (markers == null) {
+                      markers = [marker!]; // Add the new marker to the list
+                    } else {
+                      markers!.add(marker!); // Add the new marker to the list
+                    }
+                  });
+                  Navigator.pop(context);
+                },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepOrange,
+              ),
+              child: const Icon(
+                Icons.location_pin,
+                color: Colors.white,
+              )
+            ),
+          ),
+          Positioned(
+            bottom: 20.0,
+            left: 20.0,
+            child: ElevatedButton(
+              onPressed: () async {
+                setState(() {
+                  _isLoading = true;
+                });
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (context) {
+                    return LoadingDialog(messageText: 'Booking...');
+                  },
+                );
+                if (!_isBooking) {
+                  setState(() {
+                    _isBooking = true;
+                    _isCancelButtonVisible = true;
+                  });
+                  await _generateRoute();
+                  // _storeDataToDatabase(userName);
+                }
+                setState(() {
+                  _isLoading = false;
+                });
+                Navigator.pop(context);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepOrange,
+              ),
+              child: _isBooking? Text(
+                  'Waiting...',
+                style: TextStyle(color: Colors.white),
+              ) : Text(
+                  'Book',
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+          ),
+          Align(
+            alignment: Alignment.topCenter,
+            child: Card(
+              elevation: 5,
+              color: Colors.white,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextFormField(
+                        controller: _originController,
+                        style: const TextStyle(color: Colors.black87),
+                        decoration: const InputDecoration(
+                          labelText: 'Pick-up',
+                          labelStyle: TextStyle(color: Colors.black87),
+                          focusedBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.deepOrange),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.grey),
+                          ),
+                          filled: true,
+                          fillColor: Colors.white,
+                        ),
+                        validator: (value) {
+                          if (value!.isEmpty) {
+                            return 'Please enter Pick-up address';
+                          }
+                          return null;
+                        },
+                        enabled: !_isBooking,
+                        onChanged: (value) {
+                          setState(() {
+                            _showOriginSuggestions = value.isNotEmpty; // Show suggestions if there's input
+                          });
+                        },
+                      ),
+                      if (_showOriginSuggestions) _buildSuggestionsList(true), // Pass true for origin
+                      const SizedBox(height: 18,),
+                      TextFormField(
+                        controller: _destinationController,
+                        style: const TextStyle(color: Colors.black87),
+                        decoration: const InputDecoration(
+                          labelText: 'Destination',
+                          labelStyle: TextStyle(color: Colors.black87),
+                          focusedBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.deepOrange),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.grey),
+                          ),
+                          filled: true,
+                          fillColor: Colors.white,
+                        ),
+                        validator: (value) {
+                          if (value!.isEmpty) {
+                            return 'Please enter destination address';
+                          }
+                          return null;
+                        },
+                        enabled: !_isBooking,
+                        onChanged: (value) {
+                          setState(() {
+                            _showDestinationSuggestions = value.isNotEmpty;
+                          });
+                        },
+                      ),
+                      if (_showDestinationSuggestions) _buildSuggestionsList(false),
+
+                      const SizedBox(height: 18,),
+
+                      TextFormField(
+                        controller: _landmarkController,
+                        style: const TextStyle(color: Colors.black87),
+                        decoration: const InputDecoration(
+                          labelText: 'Landmark',
+                          labelStyle: TextStyle(color: Colors.black87),
+                          focusedBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.deepOrange),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.grey),
+                          ),
+                          filled: true,
+                          fillColor: Colors.white,
+                        ),
+                        validator: (value) {
+                          if (value!.isEmpty) {
+                            return 'Please enter a landmark';
+                          }
+                          return null;
+                        },
+                        enabled: !_isBooking,
+                      ),
+
+                      const SizedBox(height: 10,),
+
+                      Text(
+                        _fareText,
+                        style: const TextStyle(fontSize: 18, color: Colors.black87),
+                      ),
+                      Text(
+                        _distanceText,
+                        style: const TextStyle(fontSize: 18, color: Colors.black87),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: 20.0,
+            right: 20.0,
+            child: Visibility(
+              visible: _isCancelButtonVisible,
+              child: ElevatedButton(
+                onPressed: () async {
+                  bool confirmCancel = await showDialog(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      backgroundColor: Colors.white,
+                      title: Text('Cancel Booking', style: TextStyle(color: Colors.black87),),
+                      content: Text('Are you sure you want to cancel your booking?', style: TextStyle(color: Colors.black87),),
+                      actions: [
+                        TextButton(
+                          child: Text('No', style: TextStyle(color: Colors.black87),),
+                          onPressed: () => Navigator.pop(context, false),
+                        ),
+                        TextButton(
+                          child: Text('Yes', style: TextStyle(color: Colors.black87),),
+                          onPressed: () => Navigator.pop(context, true),
+                        ),
+                      ],
+                    ),
+                  );
+
+                  if (confirmCancel) {
+                    // Cancel the booking by changing the completion status to "cancelled"
+                    final database = FirebaseDatabase.instance.ref();
+                    final userRidesRef = database.child('rides').child(userName);
+                    final rideSnapshot = await userRidesRef.limitToLast(1).get();
+
+                    if (rideSnapshot.exists) {
+                      final oldestRideId = rideSnapshot.children.first.key;
+                      final rideRef = userRidesRef.child(oldestRideId!);
+                      await rideRef.update({
+                        'completion_status': 'cancelled',
+                      });
+                    }
+
+                    // Clear the route and all
+                    setState(() {
+                      _polyline = Polyline(points: []);
+                      _generateRouteLatlngPoints = [];
+                      _fareText = 'Fare: ₱0';
+                      _distanceText = 'Distance: 0 km';
+                      _isCancelButtonVisible = false;
+                      _isBooking = false;
+                      _originController.clear(); // Clear the pick-up text field
+                      _destinationController.clear(); // Clear the destination text field
+                      markers = null;
+                      _isOnTheWayCardVisible = false;
+                    });
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                ),
+                child: Text('Cancel', style: TextStyle(color: Colors.white),),
+              ),
+            ),
+          ),
+
+          Positioned(
+            bottom: 20.0,
+            left: 18.0,
+            child: Visibility(
+              visible: _isOnTheWayCardVisible,
+              child: Card(
+                elevation: 5,
+                color: Colors.white,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    children: [
+                      Text(
+                        'Plate: $_plate', // Display the driver's name
+                        style: TextStyle(fontSize: 23, color: Colors.black87),
+                      ),
+                      Text(
+                        'Your driver is on the way.', // Display "on the way"
+                        style: TextStyle(fontSize: 18, color: Colors.black87),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget content() {
+    return FlutterMap(
+      mapController: mapController,
+      options: MapOptions(
+        initialCenter: LatLng(16.72022, 120.35265),
+        initialZoom: 14,
+      ),
+      children: [
+        TileLayer(
+            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            userAgentPackageName: 'dev.fleaflet.flutter_map.example',
+          ),
+        MarkerLayer(
+          markers: markers ?? [], // Display the markers
+        ),
+        _polyline!= null
+            ? PolylineLayer(
+          polylines: [_polyline],
+        )
+            : Container(),
+      ],
+    );
+  }
+
+
+  TileLayer get openStreetMapTileLayer => TileLayer(
+    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    userAgentPackageName: 'dev.fleaflet.flutter_map.example',
+  );
+
+  List<LatLng> _generateRouteLatlngPoints = [];
+  List<Marker>? markers;
+
+  Future<void> _generateRoute() async {
+    if (_formKey.currentState!.validate()) {
+      _formKey.currentState!.save();
+      final originAddress = _originController.text;
+      final destinationAddress = _destinationController.text;
+
+      try {
+        final originResponse = await http.get(Uri.parse('https://nominatim.openstreetmap.org/search?q=$originAddress&format=json&limit=1'));
+        if (originResponse.statusCode != 200) {
+          print('Error geocoding origin address: ${originResponse.statusCode}');
+          return;
+        }
+        final originJson = jsonDecode(originResponse.body);
+        if (originJson.isEmpty) {
+          _showErrorNotification('There is no such address as $originAddress.');
+          return;
+        }
+        final originLatitude = double.parse(originJson[0]['lat']);
+        final originLongitude = double.parse(originJson[0]['lon']);
+
+        final destinationResponse = await http.get(Uri.parse('https://nominatim.openstreetmap.org/search?q=$destinationAddress&format=json&limit=1'));
+        if (destinationResponse.statusCode != 200) {
+          print('Error geocoding destination address: ${destinationResponse.statusCode}');
+          return;
+        }
+        final destinationJson = jsonDecode(destinationResponse.body);
+        if (destinationJson.isEmpty) {
+          _showErrorNotification('There is no such address as $destinationAddress. Please check your spelling.');
+          return;
+        }
+        final destinationLatitude = double.parse(destinationJson[0]['lat']);
+        final destinationLongitude = double.parse(destinationJson[0]['lon']);
+
+        final manager = OSRMManager();
+        final waypoints = [
+          LngLat(lng: originLongitude, lat: originLatitude),
+          LngLat(lng: destinationLongitude, lat: destinationLatitude),
+        ];
+        final road = await manager.getRoad(
+          waypoints: waypoints,
+          geometries: Geometries.polyline,
+          steps: true,
+          language: Languages.en,
+        );
+
+        List<LngLat> points = PrivateRoad.decodePoylinesGeometry(road.polylineEncoded!);
+        _generateRouteLatlngPoints = points.map((point) => LatLng(point.lat, point.lng)).toList();
+        print('LatLng points: $_generateRouteLatlngPoints');
+
+        _calculateAndPrintDistance(_generateRouteLatlngPoints);
+
+        setState(() {
+          markers = [
+            Marker(
+              point: _generateRouteLatlngPoints.first, // Start of the polyline
+              width: 60,
+              height: 60,
+              alignment: Alignment.topCenter,
+              child: Icon(
+                Icons.location_pin, // Icon at the start of the polyline
+                size: 60,
+                color: Colors.green,
+              ),
+            ),
+            Marker(
+              point: _generateRouteLatlngPoints.last, // End of the polyline
+              width: 60,
+              height: 60,
+              alignment: Alignment.topCenter,
+              child: Icon(
+                Icons.location_pin, // Icon at the end of the polyline
+                size: 60,
+                color: Colors.deepOrange,
+              ),
+            ),
+          ];
+        });
+
+        setState(() {
+          _polyline = Polyline(
+            points: _generateRouteLatlngPoints,
+            color: Colors.deepOrange,
+            strokeWidth: 5.0,
+          );
+          _animateToRoute();
+        });
+
+        // Call _storeDataToDatabase with the correct userName
+        if (_userName != null) {
+          _storeDataToDatabase(_userName!); // Pass the userName here
+        } else {
+          _showErrorNotification('User  name is not available.');
+        }
+      } catch (e) {
+        _showErrorNotification('Error: $e');
+      }
+    } else {
+      _showErrorNotification('Please enter valid pick-up and destination addresses');
+    }
+  }
+
+  void _showErrorNotification(String message) {
+    setState(() {
+      _isLoading = false;
+      _isCancelButtonVisible = false;
+      _isBooking = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.white,
+      ),
+    );
+  }
+
+  void _showFeedbackDialog(BuildContext context) {
+    showDialog(
+        context: context,
+        builder: (context) {
+      final TextEditingController _commentController = TextEditingController();
+      double _rating = 0;
+
+      return AlertDialog(
+          title: Text(
+            'Ratings and Feedbacks',
+            style: TextStyle(color: Colors.black87, fontSize: 18.0),
+          ),
+          backgroundColor: Colors.white,
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              RatingBar.builder(
+                initialRating: 1,
+                minRating: 1,
+                direction: Axis.horizontal,
+                allowHalfRating: true,
+                itemCount: 5,
+                itemSize: 30,
+                itemPadding: EdgeInsets.symmetric(horizontal: 4.0),
+                itemBuilder: (context, index) => Icon(
+                  index < _rating ? Icons.star : Icons.star_border,
+                  color: index < _rating ? Colors.amber : Colors.grey,
+                ),
+                onRatingUpdate: (rating) {
+                  setState(() {
+                    _rating = rating;
+                  });
+                },
+              ),
+              SizedBox(height: 10),
+              TextField(
+                decoration: InputDecoration(
+                  hintText: 'Enter Feedback',
+                  hintStyle: TextStyle(color: Colors.black38),
+                  focusedBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Colors.deepOrange),
+                  ),
+                ),
+                controller: _commentController,
+                maxLines: 5,
+                style: TextStyle(color: Colors.black87),
+              ),
+            ],
+          ),
+          actions: [
+          TextButton(
+          onPressed: () => Navigator.pop(context),
+            child: Text(
+            'Cancel',
+            style: TextStyle(color: Colors.black87),
+            ),
+          ),
+            TextButton(
+              onPressed: () async {
+                final comment = _commentController.text.trim();
+                if (comment.isNotEmpty) {
+                  // Submit feedback logic here
+                  await submitFeedback('completed', comment, _rating); // Submit feedback
+                  Navigator.pop(context);
+                } else {
+                  // Show error message if comment is empty
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Please enter a comment'),
+                    ),
+                  );
+                }
+                // Clear all displayed data on the user's home page
+                setState(() {
+                  _polyline = Polyline(points: []);
+                  _generateRouteLatlngPoints = [];
+                  _fareText = 'Fare: ₱0';
+                  _distanceText = 'Distance: 0 km';
+                  _isCancelButtonVisible = false;
+                  _isBooking = false;
+                  _originController.clear(); // Clear the pick-up text field
+                  _destinationController.clear(); // Clear the destination text field
+                  markers = null;
+                  _isOnTheWayCardVisible = false;
+                });
+              },
+              child: Text(
+                'Submit',
+                style: TextStyle(color: Colors.black87),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> submitFeedback(String status, String comment, double rating) async {
+    final database = FirebaseDatabase.instance.ref();
+    final userUid = FirebaseAuth.instance.currentUser!.uid;
+
+    // Generate a unique ID for the feedback
+    final String feedbackId = DateTime.now().millisecondsSinceEpoch.toString();
+
+    // Create a reference to the new feedback node
+    final feedbackRef = database.child('feedbacks').child(userUid).child(feedbackId);
+
+    // Create a map containing the feedback data
+    final feedbackData = {
+      'from': _userName,
+      'passenger_name': _userName,
+      'driver_name': _driverName,
+      'rating': rating,
+      'comment': comment,
+      'completion_status': status,
+      "date": DateTime.now().toIso8601String(),
+    };
+
+    // Update the feedback node with the data
+    await feedbackRef.set(feedbackData);
+
+    // Create a "ratings" node with "from" and "to" child nodes
+    final ratingsRef = database.child('ratings').child(feedbackId);
+    final ratingsData = {
+      'from_passenger': userName,
+      'to_the_driver': _driverName,
+      'rating': rating,
+    };
+    await ratingsRef.set(ratingsData);
+  }
+}
